@@ -68,3 +68,37 @@ class TestRunWithoutApiKey:
         assert any("OPENAI_API_KEY" in error.value for error in app.error)
         assert app.text_area(key="requirement_text").value == _SAMPLE_REQUIREMENT
         assert not list(app.code)
+
+
+class TestRunWithInvalidRetrievalConfig:
+    def test_run_shows_specific_config_error_without_generic_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+        monkeypatch.setenv("RETRIEVAL_MIN_RELEVANCE", "not-a-number")
+        at = AppTest.from_file(str(APP_PATH), default_timeout=15)
+        at.run()
+        at.text_area(key="requirement_text").set_value(_SAMPLE_REQUIREMENT).run()
+
+        at.button(key="run_button").click().run()
+
+        assert not at.exception
+        assert any("RETRIEVAL_MIN_RELEVANCE" in error.value for error in at.error)
+        assert not any("未预期" in error.value for error in at.error)
+
+
+class TestRunWithInvalidRequestTimeout:
+    def test_run_shows_specific_timeout_config_error_without_calling_api(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+        monkeypatch.setenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "0")
+        at = AppTest.from_file(str(APP_PATH), default_timeout=15)
+        at.run()
+        at.text_area(key="requirement_text").set_value(_SAMPLE_REQUIREMENT).run()
+
+        at.button(key="run_button").click().run()
+
+        assert not at.exception
+        assert any("OPENAI_REQUEST_TIMEOUT_SECONDS" in error.value for error in at.error)
+        assert not list(at.code)

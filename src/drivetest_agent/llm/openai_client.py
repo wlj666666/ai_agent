@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from drivetest_agent.config import parse_openai_request_timeout_seconds
 from drivetest_agent.domain.models import TestPlan
 from drivetest_agent.llm.exceptions import LLMFormatError, LLMResponseError, LLMServiceError
 from drivetest_agent.llm.protocol import LLMGeneration
@@ -37,12 +38,12 @@ class OpenAICompatibleClient:
             "OPENAI_BASE_URL", "https://api.openai.com/v1"
         )
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        timeout_env = os.environ.get("OPENAI_REQUEST_TIMEOUT_SECONDS")
-        self.timeout_seconds = (
+        timeout_value = (
             timeout_seconds
             if timeout_seconds is not None
-            else float(timeout_env) if timeout_env else 60.0
+            else os.environ.get("OPENAI_REQUEST_TIMEOUT_SECONDS")
         )
+        self.timeout_seconds = parse_openai_request_timeout_seconds(timeout_value)
         self._clock = clock or __import__("time").monotonic
         self._client = client
         if self._client is None:
@@ -100,48 +101,36 @@ def _parse_test_plan(content: str) -> TestPlan:
 
 
 def _extract_content(completion: Any) -> str:
-    try:
-        choices = getattr(completion, "choices", None)
-    except (AttributeError, TypeError, ValueError, IndexError) as exc:
-        raise LLMResponseError("LLM response structure error: invalid choices.") from exc
+    choices = getattr(completion, "choices", None)
     if not isinstance(choices, (list, tuple)) or not choices:
         raise LLMResponseError("LLM response structure error: choices must be non-empty.")
 
-    try:
-        message = getattr(choices[0], "message", None)
-    except (AttributeError, TypeError, ValueError, IndexError) as exc:
-        raise LLMResponseError("LLM response structure error: invalid message.") from exc
+    message = getattr(choices[0], "message", None)
     if message is None:
         raise LLMResponseError("LLM response structure error: choice is missing message.")
 
-    try:
-        content = getattr(message, "content", None)
-    except (AttributeError, TypeError, ValueError, IndexError) as exc:
-        raise LLMResponseError("LLM response structure error: invalid content.") from exc
+    content = getattr(message, "content", None)
     if not isinstance(content, str) or not content:
         raise LLMResponseError("LLM response structure error: message is missing content.")
     return content
 
 
 def _extract_tokens(completion: Any) -> int:
-    try:
-        usage = getattr(completion, "usage", None)
-    except (AttributeError, TypeError, ValueError, IndexError) as exc:
-        raise LLMResponseError("LLM response structure error: invalid usage.") from exc
+    usage = getattr(completion, "usage", None)
     if usage is None:
         return 0
 
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
     try:
-        prompt_tokens = getattr(usage, "prompt_tokens", None)
-        completion_tokens = getattr(usage, "completion_tokens", None)
-        total_tokens = getattr(usage, "total_tokens", None)
         if prompt_tokens is not None or completion_tokens is not None:
             prompt_count = _token_count(prompt_tokens, "prompt_tokens")
             completion_count = _token_count(completion_tokens, "completion_tokens")
             return prompt_count + completion_count
         if total_tokens is not None:
             return _token_count(total_tokens, "total_tokens")
-    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise LLMResponseError("LLM response structure error: invalid usage token counts.") from exc
 
     return 0

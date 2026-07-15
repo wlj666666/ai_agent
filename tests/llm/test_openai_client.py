@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from drivetest_agent.config import ConfigError
 from drivetest_agent.domain.models import TestPlan
 from drivetest_agent.llm.exceptions import LLMFormatError, LLMResponseError, LLMServiceError
 from drivetest_agent.llm.openai_client import OpenAICompatibleClient
@@ -185,6 +186,21 @@ class TestOpenAICompatibleClient:
         assert client.base_url == "https://env.example/v1"
         assert client.model == "env-model"
         assert client.timeout_seconds == 45.0
+
+    def test_direct_construction_rejects_invalid_explicit_timeout(self) -> None:
+        fake_client = FakeOpenAIClient(FakeChatCompletions([]))
+
+        with pytest.raises(ConfigError, match="OPENAI_REQUEST_TIMEOUT_SECONDS"):
+            OpenAICompatibleClient(timeout_seconds=0, client=fake_client)
+
+    def test_from_env_rejects_non_finite_timeout_with_config_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "nan")
+        fake_client = FakeOpenAIClient(FakeChatCompletions([]))
+
+        with pytest.raises(ConfigError, match="OPENAI_REQUEST_TIMEOUT_SECONDS"):
+            OpenAICompatibleClient.from_env(client=fake_client)
 
     def test_rejects_schema_invalid_json(self) -> None:
         invalid = json.dumps({"test_cases": [], "pytest_code": "x"})

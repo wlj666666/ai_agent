@@ -13,11 +13,12 @@ dependencies = [
     "openai>=1.30",
     "pydantic>=2.6",
     "scikit-learn>=1.4",
+    "python-dotenv>=1.0",
+    "pytest>=8.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
     "ruff>=0.4",
 ]
 

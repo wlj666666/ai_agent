@@ -6,11 +6,14 @@ These tests use a fake agent double and never perform a real network call.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
 from drivetest_agent.agent.orchestrator import DriveTestAgent
+from drivetest_agent.config import ConfigError
 from drivetest_agent.domain.models import AgentReport, Requirement
+from drivetest_agent.ui import service
 from drivetest_agent.ui.service import build_agent, missing_llm_config_message, run_requirement
 
 _REQUIREMENT = Requirement(
@@ -149,3 +152,116 @@ class TestBuildAgent:
         agent = build_agent()
 
         assert isinstance(agent, DriveTestAgent)
+
+    def test_retriever_uses_default_min_relevance_when_env_var_is_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("RETRIEVAL_MIN_RELEVANCE", raising=False)
+
+        agent = build_agent()
+
+        assert agent._retriever._low_confidence_threshold == pytest.approx(0.15)
+
+    def test_retriever_uses_parsed_min_relevance_from_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RETRIEVAL_MIN_RELEVANCE", "0.42")
+
+        agent = build_agent()
+
+        assert agent._retriever._low_confidence_threshold == pytest.approx(0.42)
+
+    def test_raises_config_error_for_non_numeric_min_relevance_without_calling_api(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("RETRIEVAL_MIN_RELEVANCE", "not-a-number")
+
+        with pytest.raises(ConfigError, match="RETRIEVAL_MIN_RELEVANCE"):
+            build_agent()
+
+    def test_raises_config_error_for_out_of_range_min_relevance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RETRIEVAL_MIN_RELEVANCE", "1.5")
+
+        with pytest.raises(ConfigError, match="RETRIEVAL_MIN_RELEVANCE"):
+            build_agent()
+
+    def test_passes_valid_request_timeout_to_openai_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, float] = {}
+
+        class RecordingOpenAIClient:
+            def __init__(self, *, timeout_seconds: float) -> None:
+                captured["timeout_seconds"] = timeout_seconds
+
+        monkeypatch.setenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "12.5")
+        monkeypatch.setattr(service, "OpenAICompatibleClient", RecordingOpenAIClient)
+
+        agent = build_agent()
+
+        assert captured == {"timeout_seconds": 12.5}
+        assert agent._llm_client.__class__ is RecordingOpenAIClient
+
+    def test_invalid_request_timeout_fails_before_openai_client_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class MustNotConstructOpenAIClient:
+            def __init__(self, **_kwargs: object) -> None:
+                raise AssertionError("OpenAI client must not be constructed")
+
+        monkeypatch.setenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "nan")
+        monkeypatch.setattr(service, "OpenAICompatibleClient", MustNotConstructOpenAIClient)
+
+        with pytest.raises(ConfigError, match="OPENAI_REQUEST_TIMEOUT_SECONDS"):
+            build_agent()
+
+
+class TestDotenvLoading:
+    """Dotenv loading always targets a monkeypatched path in tests, never the
+    developer's real project ``.env`` (see ``tests/ui/conftest.py``)."""
+
+    def test_missing_llm_config_message_picks_up_key_from_dotenv_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        env_file = tmp_path / "custom.env"
+        env_file.write_text("OPENAI_API_KEY=sk-from-dotenv\n", encoding="utf-8")
+        monkeypatch.setattr(service, "_ENV_PATH", env_file)
+
+        assert missing_llm_config_message() is None
+        assert __import__("os").environ["OPENAI_API_KEY"] == "sk-from-dotenv"
+
+    def test_dotenv_file_does_not_override_existing_environment_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-environment")
+        env_file = tmp_path / "custom.env"
+        env_file.write_text("OPENAI_API_KEY=sk-from-dotenv\n", encoding="utf-8")
+        monkeypatch.setattr(service, "_ENV_PATH", env_file)
+
+        missing_llm_config_message()
+
+        assert __import__("os").environ["OPENAI_API_KEY"] == "sk-real-environment"
+
+    def test_build_agent_loads_retrieval_min_relevance_from_dotenv_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("RETRIEVAL_MIN_RELEVANCE", raising=False)
+        env_file = tmp_path / "custom.env"
+        env_file.write_text("RETRIEVAL_MIN_RELEVANCE=0.33\n", encoding="utf-8")
+        monkeypatch.setattr(service, "_ENV_PATH", env_file)
+
+        agent = build_agent()
+
+        assert agent._retriever._low_confidence_threshold == pytest.approx(0.33)
+
+    def test_missing_dotenv_file_is_a_safe_no_op(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(service, "_ENV_PATH", tmp_path / "does-not-exist.env")
+
+        assert missing_llm_config_message() is not None

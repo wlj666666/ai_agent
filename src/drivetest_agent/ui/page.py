@@ -12,6 +12,7 @@ import logging
 
 import streamlit as st
 
+from drivetest_agent.config import ConfigError
 from drivetest_agent.domain.models import Requirement
 from drivetest_agent.ui.examples import ExampleCase, load_example_cases
 from drivetest_agent.ui.render import (
@@ -82,6 +83,11 @@ def _handle_run_click() -> None:
 
     try:
         agent = _cached_agent()
+    except ConfigError as exc:
+        logger.exception("Invalid configuration while building the agent stack.")
+        st.session_state["last_run_error"] = str(exc)
+        st.session_state["last_report"] = None
+        return
     except Exception:
         logger.exception("Failed to build the agent stack.")
         st.session_state["last_run_error"] = _AGENT_INIT_ERROR_MESSAGE

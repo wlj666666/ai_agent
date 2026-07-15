@@ -7,8 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from drivetest_agent.agent.orchestrator import DriveTestAgent
+from drivetest_agent.domain.models import Requirement, TestExecutionResult
+from drivetest_agent.llm.fake_client import FakeLLMClient
+from drivetest_agent.retrieval.retriever import KnowledgeRetriever
 from drivetest_agent.ui.examples import ExampleCase, load_example_cases
-from drivetest_agent.ui.paths import EXAMPLES_PATH
+from drivetest_agent.ui.paths import EXAMPLES_PATH, KNOWLEDGE_DIR
 
 
 def _write_cases(tmp_path: Path, payload: object) -> Path:
@@ -112,3 +116,56 @@ class TestRealFixedCasesFile:
         cases = load_example_cases()
 
         assert len(cases) == 3
+
+    @pytest.mark.parametrize("case_id", ["normal_complete", "boundary_equality"])
+    def test_actionable_cases_are_high_confidence_with_real_retriever(
+        self, case_id: str
+    ) -> None:
+        case = next(case for case in load_example_cases() if case.id == case_id)
+        retriever = KnowledgeRetriever(KNOWLEDGE_DIR)
+
+        references = retriever.search(case.requirement)
+
+        assert references
+        assert not all(reference.low_confidence for reference in references)
+
+    @pytest.mark.parametrize("configured_threshold", [None, 0.15])
+    def test_insufficient_info_case_is_low_confidence_with_real_retriever(
+        self, configured_threshold: float | None
+    ) -> None:
+        case = next(case for case in load_example_cases() if case.id == "insufficient_info")
+        kwargs = (
+            {}
+            if configured_threshold is None
+            else {"low_confidence_threshold": configured_threshold}
+        )
+        retriever = KnowledgeRetriever(KNOWLEDGE_DIR, **kwargs)
+
+        references = retriever.search(case.requirement)
+
+        assert references
+        assert all(reference.low_confidence for reference in references)
+
+    def test_insufficient_info_case_stops_before_llm_with_real_retriever(self) -> None:
+        case = next(case for case in load_example_cases() if case.id == "insufficient_info")
+        llm_client = FakeLLMClient()
+
+        def test_runner_must_not_run(_test_code: str) -> TestExecutionResult:
+            raise AssertionError("test runner must not run for insufficient information")
+
+        agent = DriveTestAgent(
+            retriever=KnowledgeRetriever(KNOWLEDGE_DIR),
+            llm_client=llm_client,
+            test_runner=test_runner_must_not_run,
+        )
+
+        report = agent.run(
+            Requirement(
+                text=case.requirement,
+                component_description=case.component_description,
+            )
+        )
+
+        assert report.final_status == "insufficient_info"
+        assert report.final_test_code is None
+        assert llm_client.prompts == []

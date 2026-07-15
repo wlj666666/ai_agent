@@ -15,13 +15,20 @@ import os
 from dataclasses import dataclass
 from typing import Protocol
 
+from drivetest_agent.config import (
+    load_dotenv_if_present,
+    parse_openai_request_timeout_seconds,
+    parse_retrieval_min_relevance,
+)
 from drivetest_agent.domain.models import AgentReport, Requirement
 from drivetest_agent.llm.openai_client import OpenAICompatibleClient
 from drivetest_agent.retrieval.retriever import KnowledgeRetriever
 from drivetest_agent.tools.pytest_runner import run_pytest
-from drivetest_agent.ui.paths import KNOWLEDGE_DIR
+from drivetest_agent.ui.paths import KNOWLEDGE_DIR, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
+
+_ENV_PATH = PROJECT_ROOT / ".env"
 
 _MISSING_API_KEY_MESSAGE = (
     "未检测到 OPENAI_API_KEY 环境变量，请在 .env 中配置模型密钥后重启应用。"
@@ -49,7 +56,13 @@ class AgentRunOutcome:
 
 
 def missing_llm_config_message() -> str | None:
-    """Return a user-facing error if the LLM API is not configured, else None."""
+    """Return a user-facing error if the LLM API is not configured, else None.
+
+    Loads the project's ``.env`` file first (without overriding any
+    already-set environment variable) so a locally configured key is picked
+    up the same way it would be for :func:`build_agent`.
+    """
+    load_dotenv_if_present(_ENV_PATH)
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         return _MISSING_API_KEY_MESSAGE
@@ -57,9 +70,23 @@ def missing_llm_config_message() -> str | None:
 
 
 def build_agent() -> AgentLike:
-    """Wire up the real retriever, LLM client, and restricted pytest runner."""
-    retriever = KnowledgeRetriever(KNOWLEDGE_DIR)
-    llm_client = OpenAICompatibleClient.from_env()
+    """Wire up the real retriever, LLM client, and restricted pytest runner.
+
+    Loads the project's ``.env`` file (without overriding already-set
+    environment variables) and validates ``RETRIEVAL_MIN_RELEVANCE`` and
+    ``OPENAI_REQUEST_TIMEOUT_SECONDS`` before constructing anything. An invalid value raises
+    :class:`~drivetest_agent.config.ConfigError` before any client or
+    network object is created, so a bad config value can never trigger an
+    API call.
+    """
+    load_dotenv_if_present(_ENV_PATH)
+    min_relevance = parse_retrieval_min_relevance(os.environ.get("RETRIEVAL_MIN_RELEVANCE"))
+    timeout_seconds = parse_openai_request_timeout_seconds(
+        os.environ.get("OPENAI_REQUEST_TIMEOUT_SECONDS")
+    )
+
+    retriever = KnowledgeRetriever(KNOWLEDGE_DIR, low_confidence_threshold=min_relevance)
+    llm_client = OpenAICompatibleClient(timeout_seconds=timeout_seconds)
 
     from drivetest_agent.agent.orchestrator import DriveTestAgent
 
